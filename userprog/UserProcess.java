@@ -6,6 +6,9 @@ import nachos.userprog.*;
 
 import java.io.EOFException;
 import java.io.File;
+import java.util.Arrays;
+import java.util.HashMap;
+import java.util.LinkedHashMap;
 import java.util.LinkedList;
 
 /**
@@ -394,11 +397,160 @@ public class UserProcess {
     	conditionQueue.get(cNum).sleep();
     	return 0;
     }
+    private int handleCreate(int nameAddr) {
+		try {
+			String fileName = readVirtualMemoryString(nameAddr, Machine
+					.processor().getMemory().length - nameAddr - 1);
+			if (fileName == null || unlinkeds.contains(fileName))
+				return -1;
+			if (files.containsKey(fileName)) {
+				if (files.get(fileName).containsKey(this))
+					return Arrays.asList(files.values().toArray()).indexOf(
+							files.get(fileName));
+				return -1;
+			}
+			OpenFile file = ThreadedKernel.fileSystem.open(fileName, true);
+			HashMap<UserProcess, OpenFile> value = new HashMap<UserProcess, OpenFile>();
+			value.put(this, file);
+			int size = files.size();
+			files.put(fileName, value);
+			return size;
+		} catch (Exception e) {
+			return -1;
+		}
+	}
+
+	private int handleOpen(int nameAddr) {
+		try {
+			String fileName = readVirtualMemoryString(nameAddr, Machine
+					.processor().getMemory().length - nameAddr - 1);
+			if (fileName == null || unlinkeds.contains(fileName))
+				return -1;
+			if (files.containsKey(fileName)) {
+				if (files.get(fileName).containsKey(this))
+					return Arrays.asList(files.values().toArray()).indexOf(
+							files.get(fileName));
+				return -1;
+			}
+			OpenFile file = ThreadedKernel.fileSystem.open(fileName, false);
+			if (file == null)
+				return -1;
+			HashMap<UserProcess, OpenFile> value = new HashMap<UserProcess, OpenFile>();
+			value.put(this, file);
+			int size = files.size();
+			files.put(fileName, value);
+			return size;
+		} catch (Exception e) {
+			return -1;
+		}
+	}
+
+	private int handleRead(int fileId, int bufferAddr, int count) {
+		try {
+			OpenFile file = ((HashMap<UserProcess, OpenFile>) Arrays.asList(
+					files.values().toArray()).get(fileId)).get(this);
+			String fileName = (String) Arrays.asList(files.keySet().toArray())
+					.get(fileId);
+			if(mmapeds.contains(fileName))
+				return -1;
+			byte[] data = new byte[count];
+			int readBytes = file.read(data, 0, count);
+			writeVirtualMemory(bufferAddr, data);
+			return readBytes;
+		} catch (Exception e) {
+			return -1;
+		}
+	}
+
+	private int handleWrite(int fileId, int bufferAddr, int count) {
+		try {
+			OpenFile file = ((HashMap<UserProcess, OpenFile>) Arrays.asList(
+					files.values().toArray()).get(fileId)).get(this);
+			String fileName = (String) Arrays.asList(files.keySet().toArray())
+					.get(fileId);
+			if(mmapeds.contains(fileName))
+				return -1;
+			byte[] data = new byte[count];
+			readVirtualMemory(bufferAddr, data, 0, count);
+			int wroteBytes = file.write(data, 0, count);
+			return wroteBytes;
+		} catch (Exception e) {
+			return -1;
+		}
+	}
+
+	private int handleClose(int fileId) {
+		try {
+			OpenFile file = ((HashMap<UserProcess, OpenFile>) Arrays.asList(
+					files.values().toArray()).get(fileId)).get(this);
+			file.close();
+			String fileName = (String) Arrays.asList(files.keySet().toArray())
+					.get(fileId);
+			files.remove(fileName);
+			return 0;
+		} catch (Exception e) {
+			return -1;
+		}
+	}
+
+	private int handleUnlink(int fileId) {
+		try {
+			OpenFile file = ((HashMap<UserProcess, OpenFile>) Arrays.asList(
+					files.values().toArray()).get(fileId)).get(this);
+			String fileName = (String) Arrays.asList(files.keySet().toArray())
+					.get(fileId);
+			if (file != null) {
+				file.close();
+				ThreadedKernel.fileSystem.remove(fileName);
+				files.remove(fileName);
+			} else if (!files.containsKey(fileName)) {
+				ThreadedKernel.fileSystem.remove(fileName);
+			} else {
+				unlinkeds.add(fileName);
+				while (files.containsKey(fileName))
+					((UThread) KThread.currentThread()).yield();
+				ThreadedKernel.fileSystem.remove(fileName);
+				unlinkeds.remove(fileName);
+			}
+			return 0;
+		} catch (Exception e) {
+			return -1;
+		}
+	}
+
+	private int handlemmap(int fileId, int Addr) {
+		String fileName = "";
+		try {
+			OpenFile file = ((HashMap<UserProcess, OpenFile>) Arrays.asList(
+					files.values().toArray()).get(fileId)).get(this);
+			fileName = (String) Arrays.asList(files.keySet().toArray())
+					.get(fileId);
+			mmapeds.add(fileName);
+			int size = 0, readBytes = 0;
+			byte[] data = new byte[1024];
+			do{
+				readBytes = file.read(data, 0, 1024);
+				writeVirtualMemory(Addr, data);
+				Addr += readBytes;
+				size += readBytes;
+			}while(readBytes == 1024);
+			return size;
+		} catch (Exception e) {
+			return -1;
+		}finally{
+			mmapeds.remove(fileName);
+		}
+	}
+
     
 
     private LinkedList<Semaphore> semaphoreQueue = new LinkedList<Semaphore>();
     private LinkedList<Lock> lockQueue = new LinkedList<Lock>();
     private LinkedList<Condition> conditionQueue = new LinkedList<Condition>();
+    public static LinkedList<String> unlinkeds = new LinkedList<String>();
+	public static LinkedList<String> mmapeds = new LinkedList<String>();
+	public static LinkedHashMap<String, HashMap<UserProcess, OpenFile>> files = new LinkedHashMap<String, HashMap<UserProcess, OpenFile>>();
+
     
     
     private static final int
@@ -412,6 +564,7 @@ public class UserProcess {
 	syscallWrite = 7,
 	syscallClose = 8,
 	syscallUnlink = 9,
+	syscallMmap =10,
     syscallSemaphorGet = 13,
     syscallSemaphoreV = 14,
     syscallSemaphoreP = 15,
@@ -476,6 +629,20 @@ public class UserProcess {
 		return handleConditionWakeAll(a0);
 	case syscallConditionSleep:
 		return handleConditionSleep(a0);
+	case syscallCreate:
+		return handleCreate(a0);
+	case syscallOpen:
+		return handleOpen(a0);
+	case syscallRead:
+		return handleRead(a0, a1, a2);
+	case syscallWrite:
+		return handleWrite(a0, a1, a2);
+	case syscallClose:
+		return handleClose(a0);
+	case syscallUnlink:
+		return handleUnlink(a0);
+	case syscallMmap:
+		return handlemmap(a0, a1);
 
 	default:
 	    Lib.debug(dbgProcess, "Unknown syscall " + syscall);
