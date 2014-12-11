@@ -50,9 +50,6 @@ __main:
 	.ent	name		; \
 name:				; \
 	addiu	$2,$0,number	; \
-	lw		$4,0($29)		; \
-	addiu	$29,$29,4		; \
-	
 	syscall			; \
 	j	$31		; \
 	.end	name
